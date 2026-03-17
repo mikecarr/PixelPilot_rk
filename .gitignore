@@ -64,4 +64,5 @@ build_sim/
 output/
 debian-*-generic-arm64.tar.xz
 disk.raw
-pixelpilot
+pixelpilotbuild_rpi/
+.claude/

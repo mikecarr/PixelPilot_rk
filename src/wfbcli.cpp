@@ -304,6 +304,7 @@ int reconnect_to_server(const char *host, int port) {
         {
             case APFPV:
                 SPDLOG_DEBUG("rxMode is apfpv, idle WFB thread");
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
                 break;
 
             case WFB:

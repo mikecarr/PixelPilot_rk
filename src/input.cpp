@@ -40,7 +40,7 @@ typedef struct {
     const char *chip_label;  // GPIO chip label (e.g., "gpiochip3")
     int line_num;            // GPIO line number
     struct gpiod_chip *chip;
-    struct gpiod_line *line;
+    struct gpiod_line_request *line_request;  // libgpiod v2
     int last_state;
     long last_time;
     long repeat_time;
@@ -66,7 +66,7 @@ void simulate_traffic(lv_timer_t *t)
 }
 
 #ifndef USE_SIMULATOR
-// Function to find GPIO chip and line for a given pin number
+// Function to find GPIO chip and line for a given pin number (libgpiod v2)
 bool find_gpio_mapping(int pin, const char** chip_name, int* line_num) {
     glob_t globbuf;
     struct gpiod_chip *chip = NULL;
@@ -81,22 +81,19 @@ bool find_gpio_mapping(int pin, const char** chip_name, int* line_num) {
         chip = gpiod_chip_open(globbuf.gl_pathv[i]);
         if (!chip) continue;
 
-        // Check chip label first
-        const char *label = gpiod_chip_label(chip);
-        if (label) {
-            // If we were looking for a specific chip label, we'd check here
-        }
+        struct gpiod_chip_info *chip_info = gpiod_chip_get_info(chip);
+        if (!chip_info) { gpiod_chip_close(chip); continue; }
+        int num_lines = (int)gpiod_chip_info_get_num_lines(chip_info);
+        gpiod_chip_info_free(chip_info);
 
-        // For libgpiod v1.x
-        int num_lines = gpiod_chip_num_lines(chip);
         for (int offset = 0; offset < num_lines && !found; offset++) {
-            struct gpiod_line *line = gpiod_chip_get_line(chip, offset);
-            if (!line) continue;
+            struct gpiod_line_info *line_info = gpiod_chip_get_line_info(chip, (unsigned int)offset);
+            if (!line_info) continue;
 
-            const char *name = gpiod_line_name(line);
+            const char *name = gpiod_line_info_get_name(line_info);
             if (name) {
                 int extracted_pin = 0;
-                if (sscanf(name, "PIN_%d", &extracted_pin) == 1 || 
+                if (sscanf(name, "PIN_%d", &extracted_pin) == 1 ||
                     sscanf(name, "GPIO%d", &extracted_pin) == 1 ||
                     sscanf(name, "%d", &extracted_pin) == 1) {
                     if (extracted_pin == pin) {
@@ -106,7 +103,7 @@ bool find_gpio_mapping(int pin, const char** chip_name, int* line_num) {
                     }
                 }
             }
-            gpiod_line_release(line);
+            gpiod_line_info_free(line_info);
         }
         gpiod_chip_close(chip);
     }
@@ -182,22 +179,31 @@ void setup_gpio(YAML::Node& config) {
             continue;
         }
 
-        gpio_buttons[i].line = gpiod_chip_get_line(gpio_buttons[i].chip, gpio_buttons[i].line_num);
-        if (!gpio_buttons[i].line) {
-            perror("Failed to get GPIO line");
-            gpiod_chip_close(gpio_buttons[i].chip);
-            continue;
-        }
-
-        // Create the consumer name with "pixelpilot_" prefix
+        // libgpiod v2: request the line as input
         char consumer_name[32];
         snprintf(consumer_name, sizeof(consumer_name), "pixelpilot_%s", gpio_buttons[i].name);
 
-        if (gpiod_line_request_input(gpio_buttons[i].line, consumer_name) < 0) {
-            perror("Failed to request GPIO input");
+        struct gpiod_line_settings *settings = gpiod_line_settings_new();
+        gpiod_line_settings_set_direction(settings, GPIOD_LINE_DIRECTION_INPUT);
+
+        struct gpiod_line_config *line_cfg = gpiod_line_config_new();
+        unsigned int offset = (unsigned int)gpio_buttons[i].line_num;
+        gpiod_line_config_add_line_settings(line_cfg, &offset, 1, settings);
+
+        struct gpiod_request_config *req_cfg = gpiod_request_config_new();
+        gpiod_request_config_set_consumer(req_cfg, consumer_name);
+
+        gpio_buttons[i].line_request = gpiod_chip_request_lines(
+            gpio_buttons[i].chip, req_cfg, line_cfg);
+
+        gpiod_line_settings_free(settings);
+        gpiod_line_config_free(line_cfg);
+        gpiod_request_config_free(req_cfg);
+
+        if (!gpio_buttons[i].line_request) {
+            perror("Failed to request GPIO line");
             gpiod_chip_close(gpio_buttons[i].chip);
             gpio_buttons[i].chip = NULL;
-            gpio_buttons[i].line = NULL;
         }
     }
 }
@@ -316,8 +322,10 @@ void handle_gpio_input(void) {
     long current_time = ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
     
     for (size_t i = 0; i < sizeof(gpio_buttons) / sizeof(gpio_buttons[0]); i++) {
-        if (gpio_buttons[i].chip && gpio_buttons[i].line) {
-            int current_state = gpiod_line_get_value(gpio_buttons[i].line);
+        if (gpio_buttons[i].chip && gpio_buttons[i].line_request) {
+            enum gpiod_line_value val = gpiod_line_request_get_value(
+                gpio_buttons[i].line_request, (unsigned int)gpio_buttons[i].line_num);
+            int current_state = (val == GPIOD_LINE_VALUE_ACTIVE) ? 1 : 0;
             
             // Check for state change (with debounce)
             if (current_state != gpio_buttons[i].last_state &&
@@ -376,9 +384,12 @@ void handle_gpio_input(void) {
 void cleanup_gpio(void) {
     for (int i = 0; i < MAX_GPIO_BUTTONS; i++) {
         if (gpio_buttons[i].chip) {
+            if (gpio_buttons[i].line_request) {
+                gpiod_line_request_release(gpio_buttons[i].line_request);
+                gpio_buttons[i].line_request = NULL;
+            }
             gpiod_chip_close(gpio_buttons[i].chip);
             gpio_buttons[i].chip = NULL;
-            gpio_buttons[i].line = NULL;
         }
         if (gpio_buttons[i].chip_name) {
             free((void*)gpio_buttons[i].chip_name);

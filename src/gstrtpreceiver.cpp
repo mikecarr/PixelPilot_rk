@@ -955,14 +955,18 @@ std::string GstRtpReceiver::construct_gstreamer_pipeline()
 {
     std::stringstream ss;
     if (! unix_socket)
-        ss<<"udpsrc port="<<m_port<<" "<<pipeline::gst_create_rtp_caps(m_video_codec)<<" ! tee name=rtp_tee ";
+        // buffer-size=32768: limit OS socket receive buffer to 32KB so stale
+        // packets accumulated before pixelpilot started can't add seconds of latency.
+        ss<<"udpsrc port="<<m_port<<" buffer-size=32768 "<<pipeline::gst_create_rtp_caps(m_video_codec)<<" ! tee name=rtp_tee ";
     else
         ss<<"appsrc name=appsrc "<<pipeline::gst_create_rtp_caps(m_video_codec)<<" ! tee name=rtp_tee ";
     ss<<"rtp_tee. ! ";
     ss<<pipeline::create_rtp_depacketize_for_codec(m_video_codec);
     ss<<pipeline::create_parse_for_codec(m_video_codec);
     ss<<pipeline::create_out_caps(m_video_codec);
-    ss<<"appsink drop=true name=out_appsink";
+    // max-buffers=2: makes drop=true effective — without a non-zero limit,
+    // drop=true is silently ignored and the appsink accumulates unboundedly.
+    ss<<"appsink drop=true max-buffers=2 name=out_appsink";
     ss<<create_restream_branch();
     return ss.str();
 }

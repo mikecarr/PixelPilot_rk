@@ -21,7 +21,9 @@
 #include <xf86drmMode.h>
 #include <drm_fourcc.h>
 #include <pthread.h>
+#ifndef PLATFORM_RPI
 #include <rockchip/rk_mpi.h>
+#endif
 #include <assert.h>
 
 #define OSD_BUF_COUNT	2

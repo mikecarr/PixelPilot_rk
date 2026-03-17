@@ -15,7 +15,9 @@
 #include <drm_fourcc.h>
 #include <cairo.h>
 #include <pthread.h>
+#ifndef PLATFORM_RPI
 #include <rockchip/rk_mpi.h>
+#endif
 #include <assert.h>
 #include <math.h>
 

@@ -46,7 +46,9 @@ extern "C" {
 #include "spdlog/spdlog.h"
 #include <fmt/ranges.h>
 #include "../lvgl/lvgl.h"
+#ifndef PLATFORM_RPI
 #include "osd_gl.hpp"
+#endif
 
 #ifdef BUILD_TESTS
 #include <catch2/catch.hpp>
@@ -73,13 +75,17 @@ bool osd_update_ready = false;
 bool menu_active = false;
 bool gsmenu_enabled = false;
 
+#ifndef PLATFORM_RPI
 OsdGl osd_gl;
+#endif
 extern bool enable_live_colortrans;
 extern float live_colortrans_offset;
 extern float live_colortrans_gain;
 
+#ifndef PLATFORM_RPI
 #include "frame_processor.h"
 extern FrameProcessor *frame_proc;
+#endif
 extern bool dvr_osd;
 
 osd_thread_params *p;
@@ -1478,6 +1484,9 @@ public:
 			return;
 		}
 
+		// Zero pixel data (clears stale content if SHM already existed from a previous run).
+		memset(shm_region->data, 0, (size_t)width * height * 4);
+
 		// Write metadata
 		shm_region->width = width;
 		shm_region->height = height;
@@ -1946,19 +1955,23 @@ void my_flush_cb(lv_display_t * display, const lv_area_t * area, uint8_t * px_ma
         spdlog::error("Unknown buffer being flushed");
     }
 
+#ifndef PLATFORM_RPI
 	if (enable_live_colortrans) {
 		p->out->osd_bufs[p->out->osd_buf_switch].gl_fb_id = osd_gl_process(&p->out->osd_bufs[p->out->osd_buf_switch], false); // LVGL: straight alpha
 	}
+#endif
 
 	ret = pthread_mutex_unlock(&osd_mutex);
 	assert(!ret);
 
+#ifndef PLATFORM_RPI
 	{
 		struct modeset_buf *osd_buf = &p->out->osd_bufs[p->out->osd_buf_switch];
 		if (dvr_osd && frame_proc)
 			frame_proc->set_osd_blend(osd_buf->prime_fd, osd_buf->width, osd_buf->height,
 			                         osd_buf->stride / 4);
 	}
+#endif
 
 	// tell the display thread that we have a update
 	ret = pthread_mutex_lock(&video_mutex);
@@ -2019,6 +2032,7 @@ void *__OSD_THREAD__(void *param) {
 	assert(!ret);
 
 	struct modeset_buf *buf = &p->out->osd_bufs[p->out->osd_buf_switch];
+#ifndef PLATFORM_RPI
 	ret = modeset_perform_modeset(p->fd, p->out, p->out->osd_request, &p->out->osd_plane,
 								  buf->fb, buf->width, buf->height, osd_zpos);
 
@@ -2026,6 +2040,7 @@ void *__OSD_THREAD__(void *param) {
 						live_colortrans_gain, live_colortrans_offset)) {
 		spdlog::warn("OSD GL: init failed");
 	}
+#endif
 
 	if (gsmenu_enabled) {
 		setup_lvgl(p);
@@ -2071,19 +2086,23 @@ void *__OSD_THREAD__(void *param) {
 				struct modeset_buf *buf = &p->out->osd_bufs[buf_idx];
 				modeset_paint_buffer(buf, osd);
 
+#ifndef PLATFORM_RPI
 				if (enable_live_colortrans) {
 					buf->gl_fb_id = osd_gl.process(buf, true); // Cairo: premultiplied alpha
 				}
+#endif
 
 				int ret = pthread_mutex_lock(&osd_mutex);
-				assert(!ret);	
+				assert(!ret);
 				p->out->osd_buf_switch = buf_idx;
 				ret = pthread_mutex_unlock(&osd_mutex);
 				assert(!ret);
 
+#ifndef PLATFORM_RPI
 				if (dvr_osd && frame_proc)
 					frame_proc->set_osd_blend(buf->prime_fd, buf->width, buf->height,
 					                         buf->stride / 4);
+#endif
 
 				// tell the display thread that we have a update
 				ret = pthread_mutex_lock(&video_mutex);
@@ -2216,9 +2235,13 @@ void osd_publish_str_fact(char const *name, osd_tag *tags, int n_tags, const cha
 	publish(Fact(FactMeta(std::string(name), fact_tags), std::string(value)));
 };
 
+#ifndef PLATFORM_RPI
 uint32_t osd_gl_process(struct modeset_buf* buf, bool premultiplied){
 	return osd_gl.process(buf, premultiplied);
 }
+#else
+uint32_t osd_gl_process(struct modeset_buf* /*buf*/, bool /*premultiplied*/) { return 0; }
+#endif
 
 #ifdef __cplusplus
 }
